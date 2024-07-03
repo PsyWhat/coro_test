@@ -13,7 +13,7 @@ using namespace std;
 
 Task<int> my_cor()
 {
-    cout << "my_cor" << endl;
+    cout << "my_cor" << this_thread::get_id() << endl;
     co_return 123;
 }
 
@@ -60,27 +60,28 @@ Task<void> call_more()
 Task<void> secondCor()
 {
     int i = 0;
-    cout << "secondCor " << ++i << " " << endl;
+    cout << "secondCor " << ++i << " " << this_thread::get_id() << endl;
     auto k = my_nonwait_cor(200,31);
     cout << "secondCor " << ++i << " " << endl;
     auto c = co_await my_cor();
     cout << "secondCor " << ++i << " " << typeid(c).name() << " " << c << endl;
     cout << "secondCor " << ++i << " " << co_await my_par_cor(300, 21) << endl;
     cout << "secondCor " << ++i << " " << endl;
-    void_cor(1);
+    co_await void_cor(1);
     cout << "secondCor " << ++i << " " << endl;
     co_await void_cor(2);
     cout << "secondCor " << ++i << " " << endl;
     co_await call_more();
     cout << "secondCor " << ++i << " " << endl;
+    cout << "secondCor DONE" << endl;
     co_return;
 }
 
 int main()
 {
-    cout << "echo 123" << endl;
+    cout << "echo 123 " << this_thread::get_id() << endl;
 
-    secondCor();
+    auto s = secondCor();
 
     cout << "End" << endl;
     while (true)
