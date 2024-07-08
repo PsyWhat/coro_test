@@ -12,7 +12,7 @@
 
 using namespace std;
 
-constexpr bool log_enable = false;
+constexpr bool log_enable = true;
 
 class logger : private streambuf, public ostream
 {
@@ -30,74 +30,6 @@ private:
 
 ostream &MYLOG = *(new logger());
 
-struct JobQ
-{
-
-    static JobQ &get_instance()
-    {
-        static JobQ instance;
-        return instance;
-    }
-
-    ~JobQ(){};
-
-    template <typename T>
-    void AddAwaits(coroutine_handle<T> h)
-    {
-        coros.push(h);
-    }
-
-private:
-    queue<coroutine_handle<>> coros;
-
-    static void runner(JobQ *ins)
-    {
-        static mutex m;
-        while (true)
-        {
-            m.lock();
-            if (ins->coros.size() > 0)
-            {
-                // MYLOG << "Found more coros to run." << endl;
-                auto &c = ins->coros.front();
-                ins->coros.pop();
-                if (c.address() != nullptr)
-                {
-                    if (!c.done())
-                    {
-                        MYLOG << "Running." << endl;
-                        c.resume();
-                        MYLOG << "Done Running." << endl;
-                    }
-                    else
-                    {
-                        MYLOG << "Coro is done" << endl;
-                    }
-                }
-                else
-                {
-                    MYLOG << "Coro is null" << endl;
-                }
-            }
-            m.unlock();
-            usleep(10);
-        }
-    }
-
-    vector<thread> threads;
-    static const size_t num_threads = 4;
-    JobQ()
-    {
-        for (int i = 0; i < num_threads; ++i)
-        {
-            threads.push_back(thread(this->runner, this));
-        }
-    }
-
-public:
-    JobQ(JobQ const &) = delete;
-    void operator=(JobQ const &) = delete;
-};
 
 template <class R>
 struct Promise;
@@ -110,8 +42,9 @@ struct Task
 
     coro_handle m_handle;
     std::conditional_t<std::is_same_v<R, void>, std::variant<std::monostate, std::exception_ptr>, std::variant<std::monostate, std::exception_ptr, R>> val_;
+    bool isawaiting=false;
 
-    std::variant<std::monostate, std::coroutine_handle<>> awaiting;
+    //std::variant<std::monostate, std::coroutine_handle<>> awaiting;
 
     Task(coro_handle const &&handle) noexcept : m_handle(handle), val_(m_handle.promise().val_)
     {
@@ -137,7 +70,7 @@ struct Task
     bool await_ready() noexcept
     {
         MYLOG << "await_ready " << m_handle.done() << " " << m_handle.address() << /*typeid(this).name() <<*/ endl;
-        return m_handle.done();
+        return isawaiting;
     }
 
     Task<R> operator co_await() noexcept
@@ -156,20 +89,9 @@ struct Task
     void await_suspend(coroutine_handle<T> prom) noexcept
     {
         MYLOG << "await_suspend " << prom.address() << " " << m_handle.address() << /* typeid(this).name() << */ endl;
-        // JobQ::get_instance().AddAwaits(prom);
-        /*if(!prom.done() && prom.address() != nullptr)*/
-        // if(m_handle.done()) m_handle.destroy();
-        // prom();
-        // coro_handle::resume();
-        //prom();
-        awaiting = prom;
         prom();
     }
 
-    /*promise_type promise()
-    {
-        return static_cast<promise_type>(coro_handle::promise());
-    }*/
 
     auto await_resume() noexcept
     {
@@ -189,18 +111,49 @@ struct Task
         else
         {
             MYLOG << typeid(R).name() << endl;
-            // auto val = m_handle.promise().value();
             MYLOG << "got value" << endl;
             if (std::holds_alternative<R>(val_))
-            {
-                return std::get<R>(val_);
-            }
+                return std::move(std::get<R>(val_));
             if (std::holds_alternative<std::exception_ptr>(val_))
-            {
-                throw std::get<std::exception_ptr>(val_);
-            }
+                throw std::move(std::get<std::exception_ptr>(val_));
             throw std::runtime_error("Unknown return?");
         }
+    }
+};
+
+template<class>
+struct simple_prom;
+
+template <class R = void>
+struct InitTask
+{
+    using promise_type = simple_prom<R>;
+    using coro_handle = coroutine_handle<promise_type>;
+};
+
+template<class R>
+struct simple_prom
+{
+    auto get_return_object()
+    {
+        return std::move(coroutine_handle<simple_prom<R>>::from_promise(*this));
+    }
+
+    void return_void() {}
+
+    void unhandled_exception() noexcept
+    {
+        cout << "!!!!!! unhandled exception !!!!!!" << endl;
+    }
+
+    auto initial_suspend() noexcept
+    {
+        return suspend_always{}; //Task<T>(get_return_object());
+    }
+
+    auto final_suspend() noexcept
+    {
+        return suspend_always{};
     }
 };
 
@@ -211,8 +164,6 @@ struct type_promise_type
     using coro_handle = coroutine_handle<promise_type>;
 
     Task<R> *task = nullptr;
-
-    bool valueset = false;
 
     type_promise_type()
     {
@@ -244,17 +195,12 @@ struct type_promise_type
     void return_value(R &&r)
     {
         MYLOG << "return_value " << typeid(R).name() << " " << r << " " << &val_ << " " << endl;
-        val_ = r;
-        /*         if (std::holds_alternative<R>(val_))
-                {
-                    MYLOG << "GOOD" << sizeof(val_) << endl;
-                } */
+        val_ = std::move(r);
         for (int i = 0; i < 8; ++i)
         {
             MYLOG << hex << *(reinterpret_cast<int *>(&val_) + i) << dec << " ";
         }
         MYLOG << endl;
-        valueset = true;
     }
 
     void unhandled_exception() noexcept
@@ -270,7 +216,6 @@ struct void_promise_type
 {
     using promise_type = Promise<void>;
     using coro_handle = coroutine_handle<promise_type>;
-    // coro_handle get_return_object() { return {coro_handle::from_promise(*this)}; }
 
     void unhandled_exception() noexcept
     {
@@ -283,6 +228,7 @@ struct void_promise_type
 
     std::variant<std::monostate, std::exception_ptr> val_;
 };
+
 
 template <typename T>
 struct Promise : std::conditional_t<std::is_same_v<T, void>, void_promise_type, type_promise_type<T>>
@@ -298,42 +244,21 @@ struct Promise : std::conditional_t<std::is_same_v<T, void>, void_promise_type, 
         return std::move(coro_handle::from_promise(*this));
     }
 
-    /* coro_handle initial_suspend() noexcept
-    {
-        MYLOG << "initial_suspend" << endl;
-        //JobQ::get_instance().AddAwaits(get_return_object());
 
-        return get_return_object();
-    } */
-
-    suspend_never initial_suspend() noexcept
+    auto initial_suspend() noexcept
     {
         MYLOG << "initial_suspend " << get_return_object().address() << endl;
-        return {};
+        return suspend_never{}; //Task<T>(get_return_object());
     }
 
-    suspend_always final_suspend() noexcept
+    auto  final_suspend() noexcept
     {
         MYLOG << "final_suspend " << get_return_object().address() << endl;
-        /*         MYLOG << "final_suspend" << endl;
-                get_return_object().destroy();
-                return get_return_object(); */
-
-        return {};
+        return suspend_always{};
     }
 
-    // task<T>* task_ptr_{ nullptr };
 };
 
-/*template <>
-struct Task<void> : std::coroutine_handle<Promise<void>>
-{
-    using promise_type = Promise<void>;
 
 
-    bool await_ready() { return false; }
 
-    template <class T>
-    void await_suspend(coroutine_handle<Promise<T>> prom) { JobQ::get_instance().AddAwaits(prom); }
-    void await_resume() {}
-};*/
